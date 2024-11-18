@@ -1,0 +1,6 @@
+[toolchain]
+channel = "nightly-2024-11-11"
+components = [ "rustfmt", "rust-src" ]
+# Needed for no_std
+# targets = [ "riscv32imc-unknown-none-elf" ]
+profile = "minimal"
