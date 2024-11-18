@@ -13,7 +13,7 @@ use esp_idf_svc::{
     nvs::EspDefaultNvsPartition,
     ota::EspOta,
     timer::EspTaskTimerService,
-    wifi::{AsyncWifi, EspWifi, WifiEvent},
+    wifi::{AsyncWifi, EspWifi, WifiDeviceId, WifiEvent},
 };
 
 const SSID: &str = env!("WIFI_SSID");
@@ -26,6 +26,7 @@ const MDNS_HOST_NAME: &str = "ESP";
 const MDNS_SERVICE_NAME: &str = "_efm";
 const MDNS_SERVICE_PROTOCOL: &str = "_tcp";
 const MDNS_SERVICE_PORT: u16 = 80;
+const MDNS_SERVICE_TXT_MAC_NAME: &str = "mac";
 
 fn main() -> Result<()> {
     esp_idf_svc::sys::link_patches();
@@ -37,14 +38,20 @@ fn main() -> Result<()> {
     let wifi_driver = EspWifi::new(peripherals.modem, event_loop.clone(), Some(nvs))
         .context("Failed to create wifi driver")?;
 
+    let mac_address = wifi_driver
+        .get_mac(WifiDeviceId::Sta)?
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .reduce(|acc, b| format!("{}:{}", acc, b))
+        .context("Failed to format MAC adress")?;
+    let _mdns = mdns_init(&mac_address).context("Failed to initialize mDNS")?;
+    let _http_server = http_server_init()
+        .context("Failed to intialize http server")?;
+
     block_on(async move {
-        let _mdns = mdns_init().context("Failed to initialize mDNS").unwrap();
         let (mut wifi, mut wifi_subscription) = wifi_init(wifi_driver, event_loop)
             .await
             .context("Failed to initialize wifi")
-            .unwrap();
-        let _http_server = http_server_init()
-            .context("Failed to intialize http server")
             .unwrap();
 
         loop {
@@ -53,7 +60,6 @@ fn main() -> Result<()> {
                     log::error!("Wifi disconnected! Retrying.");
                     // Reconnect while ignoring all errors
                     let _ = wifi.connect().await;
-                    let _ = wifi.wait_netif_up().await;
                 }
                 _ => (),
             }
@@ -63,15 +69,16 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn mdns_init() -> Result<EspMdns> {
+fn mdns_init(mac_address: &str) -> Result<EspMdns> {
     let mut mdns = EspMdns::take()?;
+    let txt_records = vec![(MDNS_SERVICE_TXT_MAC_NAME, mac_address)];
     mdns.set_hostname(MDNS_HOST_NAME)?;
     mdns.add_service(
         None,
         MDNS_SERVICE_NAME,
         MDNS_SERVICE_PROTOCOL,
         MDNS_SERVICE_PORT,
-        Default::default(),
+        &txt_records,
     )?;
     Ok(mdns)
 }
