@@ -1,13 +1,15 @@
-use anyhow::Result;
+// use anyhow::Result;
+use anyhow::{Context, Result};
 use core::convert::TryInto;
 use embedded_svc::{
     http::{Headers, Method},
-    wifi::{AuthMethod, ClientConfiguration, self},
+    wifi::{self, AuthMethod, ClientConfiguration},
 };
 use esp_idf_svc::{
     eventloop::{EspAsyncSubscription, EspSystemEventLoop, System},
     hal::{prelude::Peripherals, task::block_on},
     http::server::{self, EspHttpServer},
+    mdns::EspMdns,
     nvs::EspDefaultNvsPartition,
     ota::EspOta,
     timer::EspTaskTimerService,
@@ -20,6 +22,11 @@ const PASSWORD: &str = env!("WIFI_PASS");
 const OTA_PARTITION_SIZE: usize = 0x1f0000;
 const OTA_CHNUNK_SIZE: usize = 1024 * 20;
 
+const MDNS_HOST_NAME: &str = "ESP";
+const MDNS_SERVICE_NAME: &str = "_efm";
+const MDNS_SERVICE_PROTOCOL: &str = "_tcp";
+const MDNS_SERVICE_PORT: u16 = 80;
+
 fn main() -> Result<()> {
     esp_idf_svc::sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
@@ -27,17 +34,26 @@ fn main() -> Result<()> {
     let peripherals = Peripherals::take()?;
     let event_loop = EspSystemEventLoop::take()?;
     let nvs = EspDefaultNvsPartition::take()?;
-    let wifi_driver = EspWifi::new(peripherals.modem, event_loop.clone(), Some(nvs)).unwrap();
+    let wifi_driver = EspWifi::new(peripherals.modem, event_loop.clone(), Some(nvs))
+        .context("Failed to create wifi driver")?;
 
     block_on(async move {
-        let mut server = EspHttpServer::new(&server::Configuration::default()).unwrap();
-        let (mut wifi, mut subscription) = wifi_init(wifi_driver, event_loop).await.unwrap();
-        server_init(&mut server).unwrap();
+        let _mdns = mdns_init().context("Failed to initialize mDNS").unwrap();
+        let (mut wifi, mut wifi_subscription) = wifi_init(wifi_driver, event_loop)
+            .await
+            .context("Failed to initialize wifi")
+            .unwrap();
+        let _http_server = http_server_init()
+            .context("Failed to intialize http server")
+            .unwrap();
 
         loop {
-            match subscription.recv().await.unwrap() {
+            match wifi_subscription.recv().await.unwrap() {
                 WifiEvent::StaDisconnected => {
-                    wifi.connect().await.unwrap();
+                    log::error!("Wifi disconnected! Retrying.");
+                    // Reconnect while ignoring all errors
+                    let _ = wifi.connect().await;
+                    let _ = wifi.wait_netif_up().await;
                 }
                 _ => (),
             }
@@ -45,6 +61,19 @@ fn main() -> Result<()> {
     });
 
     Ok(())
+}
+
+fn mdns_init() -> Result<EspMdns> {
+    let mut mdns = EspMdns::take()?;
+    mdns.set_hostname(MDNS_HOST_NAME)?;
+    mdns.add_service(
+        None,
+        MDNS_SERVICE_NAME,
+        MDNS_SERVICE_PROTOCOL,
+        MDNS_SERVICE_PORT,
+        Default::default(),
+    )?;
+    Ok(mdns)
 }
 
 async fn wifi_init<'a>(
@@ -66,13 +95,18 @@ async fn wifi_init<'a>(
 
     wifi.set_configuration(&wifi_configuration)?;
     wifi.start().await?;
-    wifi.connect().await?;
+
+    while let Err(err) = wifi.connect().await {
+        log::error!("Error connecting to wifi {err}! Retrying.");
+    }
+
     wifi.wait_netif_up().await?;
     let subscription = event_loop.subscribe_async::<WifiEvent>().unwrap();
     Ok((wifi, subscription))
 }
 
-fn server_init(server: &mut EspHttpServer) -> Result<()> {
+fn http_server_init() -> Result<EspHttpServer<'static>> {
+    let mut server = EspHttpServer::new(&server::Configuration::default())?;
     server.fn_handler::<anyhow::Error, _>("/update", Method::Post, |mut request| {
         log::info!("Starting updater");
         let firmware_size = request.content_len().unwrap_or(0) as usize;
@@ -118,5 +152,5 @@ fn server_init(server: &mut EspHttpServer) -> Result<()> {
         Ok(())
     })?;
 
-    Ok(())
+    Ok(server)
 }
