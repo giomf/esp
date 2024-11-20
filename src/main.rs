@@ -1,4 +1,5 @@
-// use anyhow::Result;
+mod base36;
+
 use anyhow::{Context, Result};
 use core::convert::TryInto;
 use embedded_svc::{
@@ -16,17 +17,16 @@ use esp_idf_svc::{
     wifi::{AsyncWifi, EspWifi, WifiDeviceId, WifiEvent},
 };
 
+
 const SSID: &str = env!("WIFI_SSID");
 const PASSWORD: &str = env!("WIFI_PASS");
 
 const OTA_PARTITION_SIZE: usize = 0x1f0000;
 const OTA_CHNUNK_SIZE: usize = 1024 * 20;
 
-const MDNS_HOST_NAME: &str = "ESP";
 const MDNS_SERVICE_NAME: &str = "_efm";
 const MDNS_SERVICE_PROTOCOL: &str = "_tcp";
 const MDNS_SERVICE_PORT: u16 = 80;
-const MDNS_SERVICE_TXT_MAC_NAME: &str = "mac";
 
 fn main() -> Result<()> {
     esp_idf_svc::sys::link_patches();
@@ -37,14 +37,8 @@ fn main() -> Result<()> {
     let nvs = EspDefaultNvsPartition::take()?;
     let wifi_driver = EspWifi::new(peripherals.modem, event_loop.clone(), Some(nvs))
         .context("Failed to create wifi driver")?;
-
-    let mac_address = wifi_driver
-        .get_mac(WifiDeviceId::Sta)?
-        .iter()
-        .map(|b| format!("{:02x}", b))
-        .reduce(|acc, b| format!("{}:{}", acc, b))
-        .context("Failed to format MAC adress")?;
-    let _mdns = mdns_init(&mac_address).context("Failed to initialize mDNS")?;
+    let mac_address = wifi_driver.get_mac(WifiDeviceId::Sta)?;
+    let _mdns = mdns_init(mac_address).context("Failed to initialize mDNS")?;
     let _http_server = http_server_init()
         .context("Failed to intialize http server")?;
 
@@ -69,16 +63,17 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn mdns_init(mac_address: &str) -> Result<EspMdns> {
+fn mdns_init(mac_address: [u8; 6]) -> Result<EspMdns> {
+    let hostname = base36::encode(mac_address); 
+    log::info!("Set {hostname} as mDNS hostname");
     let mut mdns = EspMdns::take()?;
-    let txt_records = vec![(MDNS_SERVICE_TXT_MAC_NAME, mac_address)];
-    mdns.set_hostname(MDNS_HOST_NAME)?;
+    mdns.set_hostname(hostname)?;
     mdns.add_service(
         None,
         MDNS_SERVICE_NAME,
         MDNS_SERVICE_PROTOCOL,
         MDNS_SERVICE_PORT,
-        &txt_records,
+        Default::default()
     )?;
     Ok(mdns)
 }
