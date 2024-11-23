@@ -7,7 +7,7 @@ const MDNS_SERVICE_PORT: u16 = 80;
 
 pub fn init(hostname: &str) -> Result<EspMdns> {
     log::info!("Initialize mDNS");
-    log::info!("Set {hostname} as mDNS hostname");
+    log::info!("Set mDNS hostname to {hostname}");
     let mut mdns = EspMdns::take()?;
     mdns.set_hostname(hostname)?;
     mdns.add_service(

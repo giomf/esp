@@ -24,11 +24,11 @@ const OTA_CONTENT_TYPE: &str = "application/octet-stream";
 
 #[derive(Serialize)]
 struct Status {
-    slot: String,
+    hostname: String,
     version: String,
 }
 
-pub fn init() -> Result<EspHttpServer<'static>> {
+pub fn init(hostname: &str) -> Result<EspHttpServer<'static>> {
     log::info!("Initialize http server");
     let configuration = Configuration {
         stack_size: HTTP_SERVER_STACK_SIZE,
@@ -36,7 +36,7 @@ pub fn init() -> Result<EspHttpServer<'static>> {
     };
     let mut server = EspHttpServer::new(&configuration)?;
     add_update_handler(&mut server)?;
-    add_status_handler(&mut server)?;
+    add_status_handler(&mut server, hostname.to_string())?;
     Ok(server)
 }
 
@@ -114,14 +114,14 @@ fn add_update_handler(server: &mut EspHttpServer<'static>) -> Result<()> {
     Ok(())
 }
 
-fn add_status_handler(server: &mut EspHttpServer<'static>) -> Result<()> {
-    server.fn_handler::<anyhow::Error, _>("/status", Method::Get, |request| {
+fn add_status_handler(server: &mut EspHttpServer<'static>, hostname: String) -> Result<()> {
+    server.fn_handler::<anyhow::Error, _>("/status", Method::Get, move |request| {
         log::info!("Sending Status information");
         let ota = EspOta::new()?;
         let running_slot = ota.get_running_slot()?;
 
         let status = Status {
-            slot: running_slot.label.to_string(),
+            hostname: hostname.to_string(),
             version: running_slot.firmware.unwrap().version.to_string(),
         };
 

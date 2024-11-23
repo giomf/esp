@@ -25,7 +25,7 @@ fn main() -> Result<()> {
     let hostname = wifi.get_hostname()?;
 
     let _mdns = mdns::init(&hostname).context("Failed to initialize mDNS")?;
-    let _http_server = http_server::init().context("Failed to intialize http server")?;
+    let _http_server = http_server::init(&hostname).context("Failed to intialize http server")?;
 
     block_on(async move {
         wifi.connect(SSID, PASSWORD).await.unwrap();
