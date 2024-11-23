@@ -13,10 +13,14 @@ use esp_idf_svc::{
 use serde::Serialize;
 use std::time::Duration;
 
+const STATUS_CODE_LENGTH_REQUIRED: u16 = 411;
 const STATUS_CODE_REQUEST_ENTITY_TO_LARGE: u16 = 413;
+const STATUS_CODE_UNSUPPORTED_MEDIA_TYPE: u16 = 415;
+
 const HTTP_SERVER_STACK_SIZE: usize = OTA_CHNUNK_SIZE + 1024 * 8;
 const OTA_PARTITION_SIZE: usize = 0x1f0000;
 const OTA_CHNUNK_SIZE: usize = 1024 * 8;
+const OTA_CONTENT_TYPE: &str = "application/octet-stream";
 
 #[derive(Serialize)]
 struct Status {
@@ -38,7 +42,22 @@ pub fn init() -> Result<EspHttpServer<'static>> {
 fn add_update_handler(server: &mut EspHttpServer<'static>) -> Result<()> {
     server.fn_handler::<anyhow::Error, _>("/update", Method::Post, |mut request| {
         log::info!("Starting updater");
-        let firmware_size = request.content_len().unwrap_or(0) as usize;
+
+        if !request
+            .content_type()
+            .is_some_and(|content_type| content_type == OTA_CONTENT_TYPE)
+        {
+            request.into_status_response(STATUS_CODE_UNSUPPORTED_MEDIA_TYPE)?;
+            return Ok(());
+        }
+
+        let firmware_size = match request.content_len() {
+            None => {
+                request.into_status_response(STATUS_CODE_LENGTH_REQUIRED)?;
+                return Ok(());
+            }
+            Some(size) => size as usize,
+        };
 
         if firmware_size > OTA_PARTITION_SIZE {
             request.into_status_response(STATUS_CODE_REQUEST_ENTITY_TO_LARGE)?;
@@ -61,7 +80,7 @@ fn add_update_handler(server: &mut EspHttpServer<'static>) -> Result<()> {
 
         log::info!("Start uploading. Expected {firmware_size} bytes");
         loop {
-            let bytes_read = request.read(&mut buffer).unwrap_or_default();
+            let bytes_read = request.read(&mut buffer)?;
             total_bytes_read += bytes_read;
             log::info!("Read {total_bytes_read}/{firmware_size} bytes from firmware");
 
@@ -78,12 +97,6 @@ fn add_update_handler(server: &mut EspHttpServer<'static>) -> Result<()> {
                 ota_updater.complete()?;
                 break;
             }
-        }
-
-        if total_bytes_read < firmware_size {
-            log::error!(
-                "Only {total_bytes_read}/{firmware_size} bytes downloaded. May be network error?"
-            );
         }
 
         let reboot_timer = EspTimerService::new()?;
@@ -105,7 +118,6 @@ fn add_status_handler(server: &mut EspHttpServer<'static>) -> Result<()> {
         log::info!("Sending Status information");
         let ota = EspOta::new()?;
         let running_slot = ota.get_running_slot()?;
-        dbg!(&running_slot);
 
         let status = Status {
             slot: running_slot.label.to_string(),
