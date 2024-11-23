@@ -22,10 +22,9 @@ fn main() -> Result<()> {
     let event_loop = EspSystemEventLoop::take()?;
 
     let mut wifi = Wifi::new(event_loop.clone(), peripherals.modem)?;
+    let hostname = wifi.get_hostname()?;
 
-    let mac_address = wifi.get_mac_address();
-    let _mdns = mdns::init(mac_address).context("Failed to initialize mDNS")?;
-
+    let _mdns = mdns::init(&hostname).context("Failed to initialize mDNS")?;
     let _http_server = http_server::init().context("Failed to intialize http server")?;
 
     block_on(async move {

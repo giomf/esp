@@ -29,6 +29,7 @@ struct Status {
 }
 
 pub fn init() -> Result<EspHttpServer<'static>> {
+    log::info!("Initialize http server");
     let configuration = Configuration {
         stack_size: HTTP_SERVER_STACK_SIZE,
         ..Default::default()
