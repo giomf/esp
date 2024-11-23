@@ -10,6 +10,7 @@ use esp_idf_svc::{
     ota::EspOta,
     timer::EspTimerService,
 };
+use heapless::String;
 use serde::Serialize;
 use std::time::Duration;
 
@@ -24,11 +25,11 @@ const OTA_CONTENT_TYPE: &str = "application/octet-stream";
 
 #[derive(Serialize)]
 struct Status {
-    hostname: String,
-    version: String,
+    hostname: String<30>,
+    version: String<24>,
 }
 
-pub fn init(hostname: &str) -> Result<EspHttpServer<'static>> {
+pub fn init(hostname: String<30>) -> Result<EspHttpServer<'static>> {
     log::info!("Initialize http server");
     let configuration = Configuration {
         stack_size: HTTP_SERVER_STACK_SIZE,
@@ -36,7 +37,7 @@ pub fn init(hostname: &str) -> Result<EspHttpServer<'static>> {
     };
     let mut server = EspHttpServer::new(&configuration)?;
     add_update_handler(&mut server)?;
-    add_status_handler(&mut server, hostname.to_string())?;
+    add_status_handler(&mut server, hostname)?;
     Ok(server)
 }
 
@@ -114,15 +115,15 @@ fn add_update_handler(server: &mut EspHttpServer<'static>) -> Result<()> {
     Ok(())
 }
 
-fn add_status_handler(server: &mut EspHttpServer<'static>, hostname: String) -> Result<()> {
+fn add_status_handler(server: &mut EspHttpServer<'static>, hostname: String<30>) -> Result<()> {
     server.fn_handler::<anyhow::Error, _>("/status", Method::Get, move |request| {
         log::info!("Sending Status information");
         let ota = EspOta::new()?;
         let running_slot = ota.get_running_slot()?;
 
         let status = Status {
-            hostname: hostname.to_string(),
-            version: running_slot.firmware.unwrap().version.to_string(),
+            hostname: hostname.clone(),
+            version: running_slot.firmware.unwrap().version,
         };
 
         let status = serde_json::to_string(&status)?;

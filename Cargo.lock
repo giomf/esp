@@ -558,6 +558,7 @@ dependencies = [
  "embedded-svc",
  "embuild",
  "esp-idf-svc",
+ "heapless",
  "log",
  "serde",
  "serde_json",

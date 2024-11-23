@@ -1,3 +1,5 @@
+use heapless::String;
+
 const BASE: u64 = 36;
 const BITS_IN_BYTE: usize = 8;
 const INPUT_LENGTH: usize = 6;
@@ -7,7 +9,7 @@ const ENCODING_TABLE: [char; BASE as usize] = [
     't', 'u', 'v', 'w', 'x', 'y', 'z', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
 ];
 
-pub fn encode(input: [u8; INPUT_LENGTH]) -> String {
+pub fn encode(input: [u8; INPUT_LENGTH]) -> String<10> {
     let mut number: u64 = 0;
     // Convert bytes to a single number
     for (i, &byte) in input.iter().enumerate() {

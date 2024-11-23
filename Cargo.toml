@@ -38,6 +38,7 @@ anyhow = "1.0.93"
 embedded-svc = "0.28.0"
 serde_json = "1.0.133"
 serde = "1.0.215"
+heapless = "0.8.0"
 
 [build-dependencies]
 embuild = "0.32.0"
