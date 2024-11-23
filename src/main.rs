@@ -22,7 +22,6 @@ fn main() -> Result<()> {
     let event_loop = EspSystemEventLoop::take()?;
 
     let mut wifi = Wifi::new(event_loop.clone(), peripherals.modem)?;
-    let mut wifi_subscription = event_loop.subscribe_async::<WifiEvent>().unwrap();
 
     let mac_address = wifi.get_mac_address();
     let _mdns = mdns::init(mac_address).context("Failed to initialize mDNS")?;
@@ -31,6 +30,7 @@ fn main() -> Result<()> {
 
     block_on(async move {
         wifi.connect(SSID, PASSWORD).await.unwrap();
+        let mut wifi_subscription = event_loop.subscribe_async::<WifiEvent>().unwrap();
 
         loop {
             match wifi_subscription.recv().await.unwrap() {

@@ -6,15 +6,23 @@ use esp_idf_svc::{
         server::{Configuration, EspHttpServer},
         Method,
     },
+    io::Write,
     ota::EspOta,
     timer::EspTimerService,
 };
+use serde::Serialize;
 use std::time::Duration;
 
 const STATUS_CODE_REQUEST_ENTITY_TO_LARGE: u16 = 413;
 const HTTP_SERVER_STACK_SIZE: usize = OTA_CHNUNK_SIZE + 1024 * 8;
 const OTA_PARTITION_SIZE: usize = 0x1f0000;
 const OTA_CHNUNK_SIZE: usize = 1024 * 8;
+
+#[derive(Serialize)]
+struct Status {
+    slot: String,
+    version: String,
+}
 
 pub fn init() -> Result<EspHttpServer<'static>> {
     let configuration = Configuration {
@@ -23,6 +31,7 @@ pub fn init() -> Result<EspHttpServer<'static>> {
     };
     let mut server = EspHttpServer::new(&configuration)?;
     add_update_handler(&mut server)?;
+    add_status_handler(&mut server)?;
     Ok(server)
 }
 
@@ -88,6 +97,24 @@ fn add_update_handler(server: &mut EspHttpServer<'static>) -> Result<()> {
         std::mem::forget(reboot_timer);
         Ok(())
     })?;
+    Ok(())
+}
 
+fn add_status_handler(server: &mut EspHttpServer<'static>) -> Result<()> {
+    server.fn_handler::<anyhow::Error, _>("/status", Method::Get, |request| {
+        log::info!("Sending Status information");
+        let ota = EspOta::new()?;
+        let running_slot = ota.get_running_slot()?;
+        dbg!(&running_slot);
+
+        let status = Status {
+            slot: running_slot.label.to_string(),
+            version: running_slot.firmware.unwrap().version.to_string(),
+        };
+
+        let status = serde_json::to_string(&status)?;
+        request.into_ok_response()?.write_all(&status.as_bytes())?;
+        Ok(())
+    })?;
     Ok(())
 }

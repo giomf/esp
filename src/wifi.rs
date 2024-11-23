@@ -15,6 +15,7 @@ pub struct Wifi<'a> {
 
 impl<'a> Wifi<'a> {
     pub fn new(event_loop: EspSystemEventLoop, modem: Modem) -> Result<Self> {
+        log::info!("Creating wifi");
         let driver = EspWifi::new(
             modem,
             event_loop.clone(),
@@ -24,12 +25,11 @@ impl<'a> Wifi<'a> {
         let timer_service = EspTaskTimerService::new()?;
         let wifi = AsyncWifi::wrap(driver, event_loop, timer_service)?;
 
-        let result = Self { wifi, mac_address };
-
-        Ok(result)
+        Ok(Self { wifi, mac_address })
     }
 
     pub async fn connect(&mut self, ssid: &str, password: &str) -> Result<()> {
+        log::info!("Connect to wifi {}", ssid);
         let configuration = wifi::Configuration::Client(ClientConfiguration {
             ssid: ssid.try_into().unwrap(),
             auth_method: AuthMethod::WPA2Personal,
@@ -39,11 +39,11 @@ impl<'a> Wifi<'a> {
         });
 
         self.wifi.set_configuration(&configuration)?;
-
+        log::info!("Start");
         self.wifi.start().await?;
 
         while let Err(err) = self.wifi.connect().await {
-            log::error!("Error connecting to wifi {err}! Retrying.");
+            log::error!("Failed connecting to wifi {err}! Retrying.");
         }
 
         self.wifi.wait_netif_up().await?;
