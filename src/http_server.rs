@@ -1,4 +1,6 @@
-use anyhow::Result;
+use crate::uart::Uart;
+use am03127::{self, page_content::PageContent};
+use anyhow::{Context, Result};
 use embedded_svc::http::Headers;
 use esp_idf_svc::{
     hal::reset::restart,
@@ -11,7 +13,7 @@ use esp_idf_svc::{
     timer::EspTimerService,
 };
 use heapless::String;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 const STATUS_CODE_LENGTH_REQUIRED: u16 = 411;
@@ -22,14 +24,20 @@ const HTTP_SERVER_STACK_SIZE: usize = OTA_CHNUNK_SIZE + 1024 * 8;
 const OTA_PARTITION_SIZE: usize = 0x1f0000;
 const OTA_CHNUNK_SIZE: usize = 1024 * 8;
 const OTA_CONTENT_TYPE: &str = "application/octet-stream";
+const TEXT_CONTENT_TYPE: &str = "application/json";
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 struct Status {
     hostname: String<30>,
     version: String<24>,
 }
 
-pub fn init(hostname: String<30>) -> Result<EspHttpServer<'static>> {
+#[derive(Deserialize, Debug)]
+struct Text {
+    text: String<24>,
+}
+
+pub fn init(hostname: String<30>, uart: Uart) -> Result<EspHttpServer<'static>> {
     log::info!("Initialize http server");
     let configuration = Configuration {
         stack_size: HTTP_SERVER_STACK_SIZE,
@@ -37,8 +45,42 @@ pub fn init(hostname: String<30>) -> Result<EspHttpServer<'static>> {
     };
     let mut server = EspHttpServer::new(&configuration)?;
     add_update_handler(&mut server)?;
+    add_text_handler(&mut server, uart)?;
     add_status_handler(&mut server, hostname)?;
     Ok(server)
+}
+
+fn add_text_handler(server: &mut EspHttpServer<'static>, uart: Uart) -> Result<()> {
+    server.fn_handler::<anyhow::Error, _>("/text", Method::Post, move |mut request| {
+        log::info!("Setting Panel text");
+        if !request
+            .content_type()
+            .is_some_and(|content_type| content_type == TEXT_CONTENT_TYPE)
+        {
+            request.into_status_response(STATUS_CODE_UNSUPPORTED_MEDIA_TYPE)?;
+            return Ok(());
+        }
+        let mut body = Vec::new();
+        let mut buffer = [0u8; 128]; // Smaller chunk size for reading
+        loop {
+            match request.read(&mut buffer) {
+                Ok(0) => break, // No more data to read
+                Ok(n) => body.extend_from_slice(&buffer[..n]),
+                Err(e) => {
+                    log::error!("Error reading request body: {}", e);
+                    let mut response = request.into_status_response(500)?;
+                    response.write(b"Failed to read body")?;
+                    return Ok(());
+                }
+            }
+        }
+        let text = serde_json::from_slice::<Text>(&body).context("Failed to parse body")?;
+        let command = PageContent::default().message(&text.text).command();
+        uart.write(&command);
+        request.into_ok_response()?.write(&[])?;
+        Ok(())
+    })?;
+    Ok(())
 }
 
 fn add_update_handler(server: &mut EspHttpServer<'static>) -> Result<()> {

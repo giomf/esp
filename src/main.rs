@@ -1,7 +1,9 @@
 mod base36;
 mod http_server;
 mod mdns;
+mod uart;
 mod wifi;
+
 
 use anyhow::{Context, Result};
 use esp_idf_svc::{
@@ -25,7 +27,14 @@ fn main() -> Result<()> {
     let hostname = wifi.get_hostname()?;
 
     let _mdns = mdns::init(&hostname).context("Failed to initialize mDNS")?;
-    let _http_server = http_server::init(hostname).context("Failed to intialize http server")?;
+    let uart = uart::Uart::new(
+        peripherals.uart1,
+        peripherals.pins.gpio2,
+        peripherals.pins.gpio3,
+    )?;
+
+    uart.init().context("Failed to initialize panel")?;
+    let _http_server = http_server::init(hostname, uart).context("Failed to intialize http server")?;
 
     block_on(async move {
         wifi.connect(SSID, PASSWORD).await.unwrap();

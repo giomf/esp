@@ -21,6 +21,11 @@ dependencies = [
 ]
 
 [[package]]
+name = "am03127"
+version = "0.1.0"
+source = "git+https://github.com/giomf/AM03127.git?branch=main#5c56122f35519f2a292b67d8a42a4069f7a23172"
+
+[[package]]
 name = "android-tzdata"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -585,6 +590,7 @@ dependencies = [
 name = "esp"
 version = "0.1.0"
 dependencies = [
+ "am03127",
  "anyhow",
  "embedded-svc",
  "embuild",
