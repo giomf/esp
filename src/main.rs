@@ -2,6 +2,7 @@ mod base36;
 mod http_server;
 mod mdns;
 mod wifi;
+mod uart;
 
 use anyhow::{Context, Result};
 use esp_idf_svc::{
@@ -10,6 +11,7 @@ use esp_idf_svc::{
     wifi::WifiEvent,
 };
 use wifi::Wifi;
+use std::fmt::Write;
 
 const SSID: &str = env!("WIFI_SSID");
 const PASSWORD: &str = env!("WIFI_PASS");
@@ -26,6 +28,9 @@ fn main() -> Result<()> {
 
     let _mdns = mdns::init(&hostname).context("Failed to initialize mDNS")?;
     let _http_server = http_server::init(hostname).context("Failed to intialize http server")?;
+
+    let mut uart = uart::init(peripherals.uart1, peripherals.pins.gpio20, peripherals.pins.gpio21)?;
+    writeln!(uart, "sadfasdfasdf").unwrap(); 
 
     block_on(async move {
         wifi.connect(SSID, PASSWORD).await.unwrap();
