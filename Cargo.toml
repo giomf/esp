@@ -21,18 +21,18 @@ opt-level = "z"
 default = []
 experimental = ["esp-idf-svc/experimental"]
 
-[patch.crates-io]
-esp-idf-svc = { git = "https://github.com/esp-rs/esp-idf-svc" }
-esp-idf-hal = { git = "https://github.com/esp-rs/esp-idf-hal" }
-esp-idf-sys = { git = "https://github.com/esp-rs/esp-idf-sys" }
-cmake = { git = "https://github.com/ivmarkov/cmake-rs" }
+# [patch.crates-io]
+# esp-idf-svc = { git = "https://github.com/esp-rs/esp-idf-svc" }
+# esp-idf-hal = { git = "https://github.com/esp-rs/esp-idf-hal" }
+# esp-idf-sys = { git = "https://github.com/esp-rs/esp-idf-sys" }
+# cmake = { git = "https://github.com/ivmarkov/cmake-rs" }
 
 [[package.metadata.esp-idf-sys.extra_components]]
 remote_component = { name = "espressif/mdns", version = "1.4" }
 
 [dependencies]
 log = "0.4"
-esp-idf-svc = { version = "0.49", features = ["critical-section", "embassy-time-driver", "embassy-sync"] }
+esp-idf-svc = { version = "0.51", features = ["critical-section", "embassy-time-driver", "embassy-sync"] }
 # esp-idf-svc = { git = "https://github.com/esp-rs/esp-idf-svc.git", branch = "master", features = ["critical-section", "embassy-time-driver", "embassy-sync"] }
 anyhow = "1.0.93"
 embedded-svc = "0.28.0"
@@ -41,5 +41,4 @@ serde = "1.0.215"
 heapless = "0.8.0"
 
 [build-dependencies]
-embuild = "0.32.0"
-cc = "=1.1.30" # Necessary until a new version of `esp-idf-sys` is released
+embuild = "0.33.0"

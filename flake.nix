@@ -22,9 +22,10 @@
           overlays = [ rust-overlay.overlays.default ];
         };
         toolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
-        fhs = pkgs.buildFHSUserEnv {
+        fhs = pkgs.buildFHSEnv {
           name = "fhs-shell";
           targetPkgs = pkgs: [
+            # https://docs.espressif.com/projects/esp-idf/en/latest/esp32/get-started/linux-macos-setup.html#for-linux-users
             toolchain
             pkgs.gcc
             pkgs.pkg-config
@@ -40,40 +41,14 @@
             pkgs.python3Packages.pip
             pkgs.python3Packages.virtualenv
             pkgs.ldproxy
+            pkgs.zlib
+            pkgs.libxml2
           ];
           runScript = "fish";
         };
       in
       {
         devShells.default = fhs.env;
-        #   devShells.default = pkgs.mkShell {
-        #     buildInputs = [
-        #       # Rust toolchain
-        #       toolchain
-
-        #       pkgs.pkg-config
-        #       pkgs.openssl
-
-        #       # https://docs.espressif.com/projects/esp-idf/en/latest/esp32/get-started/linux-macos-setup.html#for-linux-users
-        #       pkgs.wget
-        #       pkgs.git
-        #       pkgs.flex
-        #       pkgs.bison
-        #       pkgs.gperf
-        #       pkgs.ldproxy
-        #       pkgs.libffi
-        #       pkgs.libusb1
-        #       pkgs.python312Packages.python
-        #       pkgs.python312Packages.pip
-        #       pkgs.python312Packages.virtualenv
-        #       pkgs.cmake
-        #       pkgs.ninja
-        #       pkgs.ccache
-        #     ];
-        #     env = {
-        #       RUST_SRC_PATH = "${toolchain}/lib/rustlib/src/rust/library";
-        #     };
-        #   };
       }
     );
 }
