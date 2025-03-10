@@ -1,5 +1,12 @@
 use crate::uart::Uart;
-use am03127::{self, page_content::PageContent};
+use am03127::{
+    self,
+    page_content::{
+        formatting::{Clock as ClockFormat, ColumnStart, Font},
+        PageContent,
+    },
+    real_time_clock::RealTimeClock,
+};
 use anyhow::{Context, Result};
 use embedded_svc::http::Headers;
 use esp_idf_svc::{
@@ -14,6 +21,7 @@ use esp_idf_svc::{
 };
 use heapless::String;
 use serde::{Deserialize, Serialize};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 const STATUS_CODE_LENGTH_REQUIRED: u16 = 411;
@@ -23,8 +31,8 @@ const STATUS_CODE_UNSUPPORTED_MEDIA_TYPE: u16 = 415;
 const HTTP_SERVER_STACK_SIZE: usize = OTA_CHNUNK_SIZE + 1024 * 8;
 const OTA_PARTITION_SIZE: usize = 0x1f0000;
 const OTA_CHNUNK_SIZE: usize = 1024 * 8;
-const OTA_CONTENT_TYPE: &str = "application/octet-stream";
-const TEXT_CONTENT_TYPE: &str = "application/json";
+const CONTENT_TYPE_OCTET_STEAM: &str = "application/octet-stream";
+const CONTENT_TYPE_JSON: &str = "application/json";
 
 #[derive(Serialize, Debug)]
 struct Status {
@@ -37,31 +45,80 @@ struct Text {
     text: String<24>,
 }
 
+#[derive(Deserialize, Debug)]
+struct Clock {
+    year: u8,
+    month: u8,
+    day: u8,
+    hour: u8,
+    minute: u8,
+    second: u8,
+}
+
 pub fn init(hostname: String<30>, uart: Uart) -> Result<EspHttpServer<'static>> {
     log::info!("Initialize http server");
     let configuration = Configuration {
         stack_size: HTTP_SERVER_STACK_SIZE,
         ..Default::default()
     };
+
+    // Wrap the Uart in Arc<Mutex<>> for shared ownership
+    let uart = Arc::new(Mutex::new(uart));
+
     let mut server = EspHttpServer::new(&configuration)?;
     add_update_handler(&mut server)?;
-    add_text_handler(&mut server, uart)?;
+
+    // Pass clones of the Arc to each handler
+    add_text_handler(&mut server, Arc::clone(&uart))?;
+    add_clock_handler(&mut server, Arc::clone(&uart))?;
     add_status_handler(&mut server, hostname)?;
+
     Ok(server)
 }
 
-fn add_text_handler(server: &mut EspHttpServer<'static>, uart: Uart) -> Result<()> {
-    server.fn_handler::<anyhow::Error, _>("/text", Method::Post, move |mut request| {
-        log::info!("Setting Panel text");
+fn add_clock_handler(server: &mut EspHttpServer<'static>, uart: Arc<Mutex<Uart>>) -> Result<()> {
+    let uart_get = uart.clone();
+    server.fn_handler::<anyhow::Error, _>("/clock", Method::Get, move |request| {
+        log::info!("Displaying clock");
+        let message = format!(
+            "{}{}{}{}",
+            ClockFormat::Time,
+            Font::Narrow,
+            ColumnStart(41),
+            ClockFormat::Date
+        );
+        let command = PageContent::default().message(&message).command();
+
+        // Lock the UART to get exclusive access
+        // The lock is automatically released when uart_guard goes out of scope
+        let uart = uart_get
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Failed to lock UART: {:?}", e))?;
+
+        // Write to the UART
+        uart.write(&command)?;
+
+        // Respond to the HTTP request
+        request.into_ok_response()?.write(&[])?;
+        Ok(())
+    })?;
+
+    let uart_post = uart.clone();
+    server.fn_handler::<anyhow::Error, _>("/clock", Method::Post, move |mut request| {
+        log::info!("Displaying clock");
+
+        // Check content type
         if !request
             .content_type()
-            .is_some_and(|content_type| content_type == TEXT_CONTENT_TYPE)
+            .is_some_and(|content_type| content_type == CONTENT_TYPE_JSON)
         {
             request.into_status_response(STATUS_CODE_UNSUPPORTED_MEDIA_TYPE)?;
             return Ok(());
         }
+
+        // Read request body
         let mut body = Vec::new();
-        let mut buffer = [0u8; 128]; // Smaller chunk size for reading
+        let mut buffer = [0u8; 128];
         loop {
             match request.read(&mut buffer) {
                 Ok(0) => break, // No more data to read
@@ -74,9 +131,77 @@ fn add_text_handler(server: &mut EspHttpServer<'static>, uart: Uart) -> Result<(
                 }
             }
         }
+        // Parse the JSON body
+        // Parse the JSON body
+        let clock = serde_json::from_slice::<Clock>(&body).context("Failed to parse body")?;
+        let command = RealTimeClock::default()
+            .year(clock.year)
+            .month(clock.month)
+            .day(clock.day)
+            .hour(clock.hour)
+            .minute(clock.minute)
+            .second(clock.second)
+            .command();
+        // Lock the UART to get exclusive access
+        // The lock is automatically released when uart_guard goes out of scope
+        let uart = uart_post
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Failed to lock UART: {:?}", e))?;
+
+        // Write to the UART
+        uart.write(&command)?;
+
+        // Respond to the HTTP request
+        request.into_ok_response()?.write(&[])?;
+        Ok(())
+    })?;
+    Ok(())
+}
+
+fn add_text_handler(server: &mut EspHttpServer<'static>, uart: Arc<Mutex<Uart>>) -> Result<()> {
+    server.fn_handler::<anyhow::Error, _>("/text", Method::Post, move |mut request| {
+        log::info!("Setting Panel text");
+
+        // Check content type
+        if !request
+            .content_type()
+            .is_some_and(|content_type| content_type == CONTENT_TYPE_JSON)
+        {
+            request.into_status_response(STATUS_CODE_UNSUPPORTED_MEDIA_TYPE)?;
+            return Ok(());
+        }
+
+        // Read request body
+        let mut body = Vec::new();
+        let mut buffer = [0u8; 128];
+        loop {
+            match request.read(&mut buffer) {
+                Ok(0) => break, // No more data to read
+                Ok(n) => body.extend_from_slice(&buffer[..n]),
+                Err(e) => {
+                    log::error!("Error reading request body: {}", e);
+                    let mut response = request.into_status_response(500)?;
+                    response.write(b"Failed to read body")?;
+                    return Ok(());
+                }
+            }
+        }
+
+        // Parse the JSON body
         let text = serde_json::from_slice::<Text>(&body).context("Failed to parse body")?;
+
+        // Create the command
         let command = PageContent::default().message(&text.text).command();
-        uart.write(&command);
+
+        // Lock the UART to get exclusive access
+        let uart = uart
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Failed to lock UART: {:?}", e))?;
+
+        // Write to the UART and handle errors
+        uart.write(&command).context("Failed to write to uart")?;
+
+        // Respond to the HTTP request
         request.into_ok_response()?.write(&[])?;
         Ok(())
     })?;
@@ -89,7 +214,7 @@ fn add_update_handler(server: &mut EspHttpServer<'static>) -> Result<()> {
 
         if !request
             .content_type()
-            .is_some_and(|content_type| content_type == OTA_CONTENT_TYPE)
+            .is_some_and(|content_type| content_type == CONTENT_TYPE_OCTET_STEAM)
         {
             request.into_status_response(STATUS_CODE_UNSUPPORTED_MEDIA_TYPE)?;
             return Ok(());
