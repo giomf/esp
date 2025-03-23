@@ -3,7 +3,7 @@ use am03127::{
     self,
     page_content::{
         formatting::{Clock as ClockFormat, ColumnStart, Font},
-        PageContent,
+        Lagging, Leading, PageContent, WaitingModeAndSpeed,
     },
     real_time_clock::RealTimeClock,
 };
@@ -34,25 +34,32 @@ const OTA_CHNUNK_SIZE: usize = 1024 * 8;
 const CONTENT_TYPE_OCTET_STEAM: &str = "application/octet-stream";
 const CONTENT_TYPE_JSON: &str = "application/json";
 
-#[derive(Serialize, Debug)]
-struct Status {
-    hostname: String<30>,
-    version: String<24>,
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct Status {
+    pub hostname: String<30>,
+    pub version: String<24>,
 }
 
-#[derive(Deserialize, Debug)]
-struct Text {
-    text: String<24>,
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Clock {
+    pub day: u8,
+    pub hour: u8,
+    pub minute: u8,
+    pub month: u8,
+    pub second: u8,
+    pub year: u8,
 }
 
-#[derive(Deserialize, Debug)]
-struct Clock {
-    year: u8,
-    month: u8,
-    day: u8,
-    hour: u8,
-    minute: u8,
-    second: u8,
+#[derive(Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct Page {
+    pub text: String<24>,
+    #[serde(default)]
+    pub leading: Leading,
+    #[serde(default)]
+    pub lagging: Lagging,
+    #[serde(default)]
+    pub waiting_mode_and_speed: WaitingModeAndSpeed,
 }
 
 pub fn init(hostname: String<30>, uart: Uart) -> Result<EspHttpServer<'static>> {
@@ -69,7 +76,7 @@ pub fn init(hostname: String<30>, uart: Uart) -> Result<EspHttpServer<'static>> 
     add_update_handler(&mut server)?;
 
     // Pass clones of the Arc to each handler
-    add_text_handler(&mut server, Arc::clone(&uart))?;
+    add_page_handler(&mut server, Arc::clone(&uart))?;
     add_clock_handler(&mut server, Arc::clone(&uart))?;
     add_status_handler(&mut server, hostname)?;
 
@@ -132,7 +139,6 @@ fn add_clock_handler(server: &mut EspHttpServer<'static>, uart: Arc<Mutex<Uart>>
             }
         }
         // Parse the JSON body
-        // Parse the JSON body
         let clock = serde_json::from_slice::<Clock>(&body).context("Failed to parse body")?;
         let command = RealTimeClock::default()
             .year(clock.year)
@@ -158,8 +164,8 @@ fn add_clock_handler(server: &mut EspHttpServer<'static>, uart: Arc<Mutex<Uart>>
     Ok(())
 }
 
-fn add_text_handler(server: &mut EspHttpServer<'static>, uart: Arc<Mutex<Uart>>) -> Result<()> {
-    server.fn_handler::<anyhow::Error, _>("/text", Method::Post, move |mut request| {
+fn add_page_handler(server: &mut EspHttpServer<'static>, uart: Arc<Mutex<Uart>>) -> Result<()> {
+    server.fn_handler::<anyhow::Error, _>("/page", Method::Post, move |mut request| {
         log::info!("Setting Panel text");
 
         // Check content type
@@ -188,10 +194,15 @@ fn add_text_handler(server: &mut EspHttpServer<'static>, uart: Arc<Mutex<Uart>>)
         }
 
         // Parse the JSON body
-        let text = serde_json::from_slice::<Text>(&body).context("Failed to parse body")?;
+        let page_content = serde_json::from_slice::<Page>(&body).context("Failed to parse body")?;
 
         // Create the command
-        let command = PageContent::default().message(&text.text).command();
+        let command = PageContent::default()
+            .leading(page_content.leading)
+            .lagging(page_content.lagging)
+            .waiting_mode_and_speed(page_content.waiting_mode_and_speed)
+            .message(&page_content.text)
+            .command();
 
         // Lock the UART to get exclusive access
         let uart = uart
