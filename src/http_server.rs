@@ -23,6 +23,9 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+static HTML: &str = include_str!("index.html");
+
+const STATUS_CODE_BAD_REQUEST: u16 = 400;
 const STATUS_CODE_LENGTH_REQUIRED: u16 = 411;
 const STATUS_CODE_REQUEST_ENTITY_TO_LARGE: u16 = 413;
 const STATUS_CODE_UNSUPPORTED_MEDIA_TYPE: u16 = 415;
@@ -52,7 +55,7 @@ pub struct Clock {
 #[derive(Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct FormattedText {
-    pub text: String<24>,
+    pub text: String<32>,
     #[serde(default)]
     pub leading: Leading,
     #[serde(default)]
@@ -78,14 +81,23 @@ pub fn init(hostname: String<30>, uart: Uart) -> Result<EspHttpServer<'static>> 
     add_text_handler(&mut server, Arc::clone(&uart))?;
     add_clock_handler(&mut server, Arc::clone(&uart))?;
     add_status_handler(&mut server, hostname)?;
+    add_web_page_handler(&mut server)?;
 
     Ok(server)
+}
+
+fn add_web_page_handler(server: &mut EspHttpServer<'static>) -> Result<()> {
+    server.fn_handler::<anyhow::Error, _>("/", Method::Get, move |request| {
+        request.into_ok_response()?.write_all(HTML.as_bytes())?;
+        Ok(())
+    })?;
+    Ok(())
 }
 
 fn add_clock_handler(server: &mut EspHttpServer<'static>, uart: Arc<Mutex<Uart>>) -> Result<()> {
     let uart_get = uart.clone();
     server.fn_handler::<anyhow::Error, _>("/clock", Method::Get, move |request| {
-        log::info!("Displaying clock");
+        log::info!("Display clock");
         let message = format!(
             "{}{}{}{}",
             ClockFormat::Time,
@@ -111,21 +123,35 @@ fn add_clock_handler(server: &mut EspHttpServer<'static>, uart: Arc<Mutex<Uart>>
 
     let uart_post = uart.clone();
     server.fn_handler::<anyhow::Error, _>("/clock", Method::Post, move |mut request| {
-        log::info!("Displaying clock");
+        log::info!("Setting clock");
 
         // Check content type
         if !request
             .content_type()
             .is_some_and(|content_type| content_type == CONTENT_TYPE_JSON)
         {
-            log::warn!("Wrong content type");
+            log::warn!("Content type not supported");
             request
                 .into_status_response(STATUS_CODE_UNSUPPORTED_MEDIA_TYPE)?
-                .write(&[])?;
+                .write(b"Content type not supported")?;
             return Ok(());
         }
 
-        let clock = read_json_body::<Clock>(&mut request)?;
+        let clock = match read_json_body::<Clock>(&mut request) {
+            Ok(clock) => clock,
+            Err(err) => {
+                log::error!(
+                    "Bad request: {}\n{}",
+                    err.to_string(),
+                    err.root_cause().to_string()
+                );
+                request
+                    .into_status_response(STATUS_CODE_BAD_REQUEST)?
+                    .write_all(err.to_string().as_bytes())?;
+                return Ok(());
+            }
+        };
+
         let command = RealTimeClock::default()
             .year(clock.year)
             .month(clock.month)
@@ -160,14 +186,28 @@ fn add_text_handler(server: &mut EspHttpServer<'static>, uart: Arc<Mutex<Uart>>)
             .content_type()
             .is_some_and(|content_type| content_type == CONTENT_TYPE_JSON)
         {
-            log::warn!("Wrong content type");
+            log::warn!("Content type not supported");
             request
                 .into_status_response(STATUS_CODE_UNSUPPORTED_MEDIA_TYPE)?
-                .write(&[])?;
+                .write(b"Content type not supported")?;
             return Ok(());
         }
 
-        let formatted_text = read_json_body::<FormattedText>(&mut request)?;
+        let formatted_text = match read_json_body::<FormattedText>(&mut request) {
+            Ok(text) => text,
+            Err(err) => {
+                log::error!(
+                    "Bad request: {}\n{}",
+                    err.to_string(),
+                    err.root_cause().to_string()
+                );
+                request
+                    .into_status_response(STATUS_CODE_BAD_REQUEST)?
+                    .write_all(err.to_string().as_bytes())?;
+                return Ok(());
+            }
+        };
+
         let command = PageContent::default()
             .leading(formatted_text.leading)
             .lagging(formatted_text.lagging)
@@ -198,7 +238,10 @@ fn add_update_handler(server: &mut EspHttpServer<'static>) -> Result<()> {
             .content_type()
             .is_some_and(|content_type| content_type == CONTENT_TYPE_OCTET_STEAM)
         {
-            request.into_status_response(STATUS_CODE_UNSUPPORTED_MEDIA_TYPE)?;
+            log::warn!("Content type not supported");
+            request
+                .into_status_response(STATUS_CODE_UNSUPPORTED_MEDIA_TYPE)?
+                .write(b"Content type not supported")?;
             return Ok(());
         }
 

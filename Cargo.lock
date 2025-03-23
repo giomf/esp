@@ -23,7 +23,7 @@ dependencies = [
 [[package]]
 name = "am03127"
 version = "0.1.0"
-source = "git+https://github.com/giomf/AM03127.git?branch=main#2847ecc821df6acc3a1cba79537a5a6e60ca66d2"
+source = "git+https://github.com/giomf/AM03127.git?branch=main#290c1487d49e353359d094762daec6c0d03c70c8"
 dependencies = [
  "serde",
 ]

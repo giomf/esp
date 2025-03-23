@@ -45,8 +45,7 @@ impl Uart {
 
     pub fn write(&self, command: &str) -> Result<()> {
         let mut buffer = [0; READ_BUFFER_SIZE];
-        let written = self.uart.write(command.as_bytes())?;
-        dbg!(written);
+        let _ = self.uart.write(command.as_bytes())?;
         let _ = self.uart.read(&mut buffer, READ_TIMEOUT)?;
         let result = String::from_utf8_lossy(&buffer);
 
