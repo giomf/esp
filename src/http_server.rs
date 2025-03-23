@@ -1,18 +1,17 @@
 use crate::uart::Uart;
 use am03127::{
-    self,
     page_content::{
         formatting::{Clock as ClockFormat, ColumnStart, Font},
         Lagging, Leading, PageContent, WaitingModeAndSpeed,
     },
     real_time_clock::RealTimeClock,
 };
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use embedded_svc::http::Headers;
 use esp_idf_svc::{
     hal::reset::restart,
     http::{
-        server::{Configuration, EspHttpServer},
+        server::{Configuration, EspHttpConnection, EspHttpServer, Request},
         Method,
     },
     io::Write,
@@ -20,7 +19,7 @@ use esp_idf_svc::{
     timer::EspTimerService,
 };
 use heapless::String;
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -52,7 +51,7 @@ pub struct Clock {
 
 #[derive(Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
-pub struct Page {
+pub struct FormattedText {
     pub text: String<24>,
     #[serde(default)]
     pub leading: Leading,
@@ -76,7 +75,7 @@ pub fn init(hostname: String<30>, uart: Uart) -> Result<EspHttpServer<'static>> 
     add_update_handler(&mut server)?;
 
     // Pass clones of the Arc to each handler
-    add_page_handler(&mut server, Arc::clone(&uart))?;
+    add_text_handler(&mut server, Arc::clone(&uart))?;
     add_clock_handler(&mut server, Arc::clone(&uart))?;
     add_status_handler(&mut server, hostname)?;
 
@@ -123,23 +122,7 @@ fn add_clock_handler(server: &mut EspHttpServer<'static>, uart: Arc<Mutex<Uart>>
             return Ok(());
         }
 
-        // Read request body
-        let mut body = Vec::new();
-        let mut buffer = [0u8; 128];
-        loop {
-            match request.read(&mut buffer) {
-                Ok(0) => break, // No more data to read
-                Ok(n) => body.extend_from_slice(&buffer[..n]),
-                Err(e) => {
-                    log::error!("Error reading request body: {}", e);
-                    let mut response = request.into_status_response(500)?;
-                    response.write(b"Failed to read body")?;
-                    return Ok(());
-                }
-            }
-        }
-        // Parse the JSON body
-        let clock = serde_json::from_slice::<Clock>(&body).context("Failed to parse body")?;
+        let clock = read_json_body::<Clock>(&mut request)?;
         let command = RealTimeClock::default()
             .year(clock.year)
             .month(clock.month)
@@ -148,6 +131,7 @@ fn add_clock_handler(server: &mut EspHttpServer<'static>, uart: Arc<Mutex<Uart>>
             .minute(clock.minute)
             .second(clock.second)
             .command();
+
         // Lock the UART to get exclusive access
         // The lock is automatically released when uart_guard goes out of scope
         let uart = uart_post
@@ -164,8 +148,8 @@ fn add_clock_handler(server: &mut EspHttpServer<'static>, uart: Arc<Mutex<Uart>>
     Ok(())
 }
 
-fn add_page_handler(server: &mut EspHttpServer<'static>, uart: Arc<Mutex<Uart>>) -> Result<()> {
-    server.fn_handler::<anyhow::Error, _>("/page", Method::Post, move |mut request| {
+fn add_text_handler(server: &mut EspHttpServer<'static>, uart: Arc<Mutex<Uart>>) -> Result<()> {
+    server.fn_handler::<anyhow::Error, _>("/text", Method::Post, move |mut request| {
         log::info!("Setting Panel text");
 
         // Check content type
@@ -173,35 +157,18 @@ fn add_page_handler(server: &mut EspHttpServer<'static>, uart: Arc<Mutex<Uart>>)
             .content_type()
             .is_some_and(|content_type| content_type == CONTENT_TYPE_JSON)
         {
-            request.into_status_response(STATUS_CODE_UNSUPPORTED_MEDIA_TYPE)?;
+            request
+                .into_status_response(STATUS_CODE_UNSUPPORTED_MEDIA_TYPE)?
+                .write(&[]);
             return Ok(());
         }
 
-        // Read request body
-        let mut body = Vec::new();
-        let mut buffer = [0u8; 128];
-        loop {
-            match request.read(&mut buffer) {
-                Ok(0) => break, // No more data to read
-                Ok(n) => body.extend_from_slice(&buffer[..n]),
-                Err(e) => {
-                    log::error!("Error reading request body: {}", e);
-                    let mut response = request.into_status_response(500)?;
-                    response.write(b"Failed to read body")?;
-                    return Ok(());
-                }
-            }
-        }
-
-        // Parse the JSON body
-        let page_content = serde_json::from_slice::<Page>(&body).context("Failed to parse body")?;
-
-        // Create the command
+        let formatted_text = read_json_body::<FormattedText>(&mut request)?;
         let command = PageContent::default()
-            .leading(page_content.leading)
-            .lagging(page_content.lagging)
-            .waiting_mode_and_speed(page_content.waiting_mode_and_speed)
-            .message(&page_content.text)
+            .leading(formatted_text.leading)
+            .lagging(formatted_text.lagging)
+            .waiting_mode_and_speed(formatted_text.waiting_mode_and_speed)
+            .message(&formatted_text.text)
             .command();
 
         // Lock the UART to get exclusive access
@@ -309,4 +276,25 @@ fn add_status_handler(server: &mut EspHttpServer<'static>, hostname: String<30>)
         Ok(())
     })?;
     Ok(())
+}
+
+fn read_json_body<T: DeserializeOwned>(
+    request: &mut Request<&mut EspHttpConnection<'_>>,
+) -> Result<T> {
+    // Read request body
+    let mut body = Vec::new();
+    let mut buffer = [0u8; 128];
+    loop {
+        match request.read(&mut buffer) {
+            Ok(0) => break, // No more data to read
+            Ok(n) => body.extend_from_slice(&buffer[..n]),
+            Err(e) => {
+                bail!("Error reading request body: {}", e);
+            }
+        }
+    }
+
+    // Parse the JSON body
+    let json_body = serde_json::from_slice::<T>(&body).context("Failed to parse json body")?;
+    Ok(json_body)
 }
