@@ -118,7 +118,10 @@ fn add_clock_handler(server: &mut EspHttpServer<'static>, uart: Arc<Mutex<Uart>>
             .content_type()
             .is_some_and(|content_type| content_type == CONTENT_TYPE_JSON)
         {
-            request.into_status_response(STATUS_CODE_UNSUPPORTED_MEDIA_TYPE)?;
+            log::warn!("Wrong content type");
+            request
+                .into_status_response(STATUS_CODE_UNSUPPORTED_MEDIA_TYPE)?
+                .write(&[])?;
             return Ok(());
         }
 
@@ -157,9 +160,10 @@ fn add_text_handler(server: &mut EspHttpServer<'static>, uart: Arc<Mutex<Uart>>)
             .content_type()
             .is_some_and(|content_type| content_type == CONTENT_TYPE_JSON)
         {
+            log::warn!("Wrong content type");
             request
                 .into_status_response(STATUS_CODE_UNSUPPORTED_MEDIA_TYPE)?
-                .write(&[]);
+                .write(&[])?;
             return Ok(());
         }
 
