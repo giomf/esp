@@ -12,7 +12,7 @@ dependencies:
   idf:
     source:
       type: idf
-    version: 5.2.2
+    version: 5.3.2
 direct_dependencies:
 - espressif/mdns
 manifest_hash: e7f1c61e6135aecdb38fc4be6c0a74a0b5dab2667145d593f168f8cd7832abc8
