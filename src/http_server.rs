@@ -6,7 +6,8 @@ use am03127::{
     },
     real_time_clock::RealTimeClock,
 };
-use anyhow::{bail, Context, Result};
+use anyhow::Result;
+use core::fmt::Debug;
 use embedded_svc::http::Headers;
 use esp_idf_svc::{
     hal::reset::restart,
@@ -18,10 +19,14 @@ use esp_idf_svc::{
     ota::EspOta,
     timer::EspTimerService,
 };
-use heapless::String;
+use heapless::{String, Vec};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use std::{
+    str::FromStr,
+    sync::{Arc, Mutex},
+};
+use thiserror::Error;
 
 static HTML: &str = include_str!("index.html");
 
@@ -31,6 +36,7 @@ const STATUS_CODE_REQUEST_ENTITY_TO_LARGE: u16 = 413;
 const STATUS_CODE_UNSUPPORTED_MEDIA_TYPE: u16 = 415;
 
 const HTTP_SERVER_STACK_SIZE: usize = OTA_CHNUNK_SIZE + 1024 * 8;
+const HTTP_SERVER_MAX_RESPONSE_BODY_SIZE: usize = 1024;
 const OTA_PARTITION_SIZE: usize = 0x1f0000;
 const OTA_CHNUNK_SIZE: usize = 1024 * 8;
 const CONTENT_TYPE_OCTET_STEAM: &str = "application/octet-stream";
@@ -86,8 +92,47 @@ pub fn init(hostname: String<30>, uart: Uart) -> Result<EspHttpServer<'static>> 
     Ok(server)
 }
 
+fn error_handling_wrapper<E, F>(
+    handler: F,
+) -> impl for<'r> Fn(Request<&mut EspHttpConnection<'r>>) -> Result<(), E> + Send + 'static
+where
+    F: for<'r> Fn(
+            &mut Request<&mut EspHttpConnection<'r>>,
+        ) -> Result<Vec<u8, HTTP_SERVER_MAX_RESPONSE_BODY_SIZE>, CustomError>
+        + Send
+        + 'static,
+    E: Debug,
+{
+    move |request| match handler(&mut request) {
+        Ok(body) => {
+            request
+                .into_ok_response()
+                .unwrap()
+                .write_all(&body)
+                .unwrap();
+            Ok(())
+        }
+        Err(err) => {
+            log::error!("Handler error: {:?}", err);
+            let status = match err {
+                CustomError::Unknown => 500,
+                CustomError::InvalidContentType() => 415,
+                CustomError::Parsing(_) => 400,
+            };
+
+            request
+                .into_status_response(status)
+                .unwrap()
+                .write_all(b"")
+                .unwrap();
+            Ok(())
+        }
+    }
+}
+
 fn add_web_page_handler(server: &mut EspHttpServer<'static>) -> Result<()> {
-    server.fn_handler::<anyhow::Error, _>("/", Method::Get, move |request| {
+    // Do not use the error wrapper here since we want not to be limited by the max body size.
+    server.fn_handler::<anyhow::Error, _>("/", Method::Get, |request| {
         request.into_ok_response()?.write_all(HTML.as_bytes())?;
         Ok(())
     })?;
@@ -177,56 +222,56 @@ fn add_clock_handler(server: &mut EspHttpServer<'static>, uart: Arc<Mutex<Uart>>
     Ok(())
 }
 
+#[derive(Error, Debug)]
+pub enum CustomError {
+    #[error("Content type \"{received}\" not accepted. Try \"{expected}\" instead.")]
+    InvalidContentType {
+        expected: String<32>,
+        received: String<32>,
+    },
+    #[error("Parsing Error")]
+    Parsing(#[from] serde_json::Error),
+
+    #[error("Unknown Error")]
+    Unknown,
+}
+
 fn add_text_handler(server: &mut EspHttpServer<'static>, uart: Arc<Mutex<Uart>>) -> Result<()> {
-    server.fn_handler::<anyhow::Error, _>("/text", Method::Post, move |mut request| {
-        log::info!("Setting Panel text");
+    server.fn_handler::<CustomError, _>(
+        "/text",
+        Method::Post,
+        error_handling_wrapper(|mut request| {
+            log::info!("Setting Panel text");
 
-        // Check content type
-        if !request
-            .content_type()
-            .is_some_and(|content_type| content_type == CONTENT_TYPE_JSON)
-        {
-            log::warn!("Content type not supported");
-            request
-                .into_status_response(STATUS_CODE_UNSUPPORTED_MEDIA_TYPE)?
-                .write(b"Content type not supported")?;
-            return Ok(());
-        }
-
-        let formatted_text = match read_json_body::<FormattedText>(&mut request) {
-            Ok(text) => text,
-            Err(err) => {
-                log::error!(
-                    "Bad request: {}\n{}",
-                    err.to_string(),
-                    err.root_cause().to_string()
-                );
-                request
-                    .into_status_response(STATUS_CODE_BAD_REQUEST)?
-                    .write_all(err.to_string().as_bytes())?;
-                return Ok(());
+            // Check content type
+            let content_type = request.content_type().unwrap_or_default();
+            if content_type == CONTENT_TYPE_JSON {
+                return Err(CustomError::InvalidContentType {
+                    expected: String::from_str(CONTENT_TYPE_JSON)
+                        .map_err(|_| CustomError::Unknown)?,
+                    received: String::from_str("").map_err(|_| CustomError::Unknown)?,
+                });
             }
-        };
+            let formatted_text = read_json_body::<FormattedText>(&mut request)?;
 
-        let command = PageContent::default()
-            .leading(formatted_text.leading)
-            .lagging(formatted_text.lagging)
-            .waiting_mode_and_speed(formatted_text.waiting_mode_and_speed)
-            .message(&formatted_text.text)
-            .command();
+            let command = PageContent::default()
+                .leading(formatted_text.leading)
+                .lagging(formatted_text.lagging)
+                .waiting_mode_and_speed(formatted_text.waiting_mode_and_speed)
+                .message(&formatted_text.text)
+                .command();
 
-        // Lock the UART to get exclusive access
-        let uart = uart
-            .lock()
-            .map_err(|e| anyhow::anyhow!("Failed to lock UART: {:?}", e))?;
+            // Lock the UART to get exclusive access
+            let uart = uart.lock().map_err(|err| CustomError::Unknown)?;
 
-        // Write to the UART and handle errors
-        uart.write(&command).context("Failed to write to uart")?;
+            // Write to the UART and handle errors
+            uart.write(&command).context("Failed to write to uart")?;
 
-        // Respond to the HTTP request
-        request.into_ok_response()?.write(&[])?;
-        Ok(())
-    })?;
+            // Respond to the HTTP request
+            request.into_ok_response()?.write(&[])?;
+            Ok(Vec::new())
+        }),
+    )?;
     Ok(())
 }
 
@@ -327,21 +372,21 @@ fn add_status_handler(server: &mut EspHttpServer<'static>, hostname: String<30>)
 
 fn read_json_body<T: DeserializeOwned>(
     request: &mut Request<&mut EspHttpConnection<'_>>,
-) -> Result<T> {
+) -> Result<T, CustomError> {
     // Read request body
-    let mut body = Vec::new();
+    let mut body = Vec::<u8, 256>::new();
     let mut buffer = [0u8; 128];
     loop {
         match request.read(&mut buffer) {
             Ok(0) => break, // No more data to read
-            Ok(n) => body.extend_from_slice(&buffer[..n]),
+            Ok(n) => body.extend_from_slice(&buffer[..n]).unwrap(),
             Err(e) => {
-                bail!("Error reading request body: {}", e);
+                return Err(CustomError::Unknown);
             }
         }
     }
 
     // Parse the JSON body
-    let json_body = serde_json::from_slice::<T>(&body).context("Failed to parse json body")?;
+    let json_body = serde_json::from_slice::<T>(&body)?;
     Ok(json_body)
 }
